@@ -1,0 +1,330 @@
+/**
+ * PlatformSDK Service - CrazyGames SDK v3 Integration with Fallback Support
+ * Handles:
+ * - CrazyGames SDK v3 initialization & lifecycle (gameplayStart, gameplayStop, happytime)
+ * - Video Ads (Midgame & Rewarded) with automatic audio muting
+ * - Mandatory tab visibility & window blur/focus audio silencing & auto-pause
+ * - Graceful local development / standalone fallback
+ */
+
+import { soundEffects } from '../audio/SoundEffects';
+
+export interface AdCallbacks {
+  adStarted?: () => void;
+  adFinished?: () => void;
+  adError?: (error: unknown) => void;
+}
+
+export interface RewardedCallbacks {
+  onReward?: () => void;
+  rewardGranted?: () => void;
+  onStarted?: () => void;
+  adStarted?: () => void;
+  onFinished?: () => void;
+  adFinished?: () => void;
+  onError?: (error: unknown) => void;
+  adError?: (error: unknown) => void;
+}
+
+type PauseListener = (reason: 'ad' | 'blur') => void;
+type ResumeListener = (reason: 'ad' | 'focus') => void;
+
+interface CrazyGamesSDKInstance {
+  init: () => Promise<void>;
+  getEnvironment?: () => string;
+  game: {
+    gameplayStart: () => void;
+    gameplayStop: () => void;
+    happytime: () => void;
+  };
+  ad: {
+    requestAd: (
+      type: 'midgame' | 'rewarded',
+      callbacks?: {
+        adStarted?: () => void;
+        adFinished?: () => void;
+        adError?: (error: unknown) => void;
+      }
+    ) => void;
+    hasAdblock?: () => Promise<boolean>;
+  };
+  user?: {
+    getUser?: () => Promise<unknown>;
+  };
+}
+
+declare global {
+  interface Window {
+    CrazyGames?: {
+      SDK: CrazyGamesSDKInstance;
+    };
+  }
+}
+
+class PlatformSDKService {
+  private isInitialized = false;
+  private isAdPlaying = false;
+  private isDocumentVisible = true;
+  private isWindowFocused = true;
+  private pauseListeners: Set<PauseListener> = new Set();
+  private resumeListeners: Set<ResumeListener> = new Set();
+
+  constructor() {
+    this.setupVisibilityListeners();
+  }
+
+  /**
+   * Initialize CrazyGames SDK v3 with graceful fallback
+   */
+  public async init(): Promise<boolean> {
+    if (this.isInitialized) return true;
+
+    try {
+      if (typeof window !== 'undefined' && window.CrazyGames?.SDK) {
+        await window.CrazyGames.SDK.init();
+        this.isInitialized = true;
+        const env = window.CrazyGames.SDK.getEnvironment?.() || 'unknown';
+        console.log(`[PlatformSDK] CrazyGames SDK v3 successfully initialized (Environment: ${env})`);
+        return true;
+      } else {
+        console.log('[PlatformSDK] CrazyGames SDK script not found or blocked. Running in Standalone / Dev Fallback mode.');
+        this.isInitialized = true;
+        return false;
+      }
+    } catch (err) {
+      console.warn('[PlatformSDK] Failed to initialize CrazyGames SDK v3:', err);
+      this.isInitialized = true;
+      return false;
+    }
+  }
+
+  public isAvailable(): boolean {
+    return typeof window !== 'undefined' && Boolean(window.CrazyGames?.SDK);
+  }
+
+  /**
+   * Signal that active gameplay has started (match kickoff / resume)
+   */
+  public gameplayStart(): void {
+    try {
+      if (window.CrazyGames?.SDK?.game) {
+        window.CrazyGames.SDK.game.gameplayStart();
+      }
+    } catch (e) {
+      console.warn('[PlatformSDK] gameplayStart error:', e);
+    }
+  }
+
+  /**
+   * Signal that gameplay has stopped (menu, pause, game-over)
+   */
+  public gameplayStop(): void {
+    try {
+      if (window.CrazyGames?.SDK?.game) {
+        window.CrazyGames.SDK.game.gameplayStop();
+      }
+    } catch (e) {
+      console.warn('[PlatformSDK] gameplayStop error:', e);
+    }
+  }
+
+  /**
+   * Trigger CrazyGames celebratory confetti animation on site
+   * Use on goals scored, tournament round victory, or trophy win!
+   */
+  public happytime(): void {
+    try {
+      if (window.CrazyGames?.SDK?.game) {
+        window.CrazyGames.SDK.game.happytime();
+      }
+    } catch (e) {
+      console.warn('[PlatformSDK] happytime error:', e);
+    }
+  }
+
+  /**
+   * Request a midgame / interstitial ad between matches or tournament rounds.
+   * Automatically mutes audio & signals system pause.
+   */
+  public requestMidgameAd(callbacks?: AdCallbacks): void {
+    if (!this.isAvailable()) {
+      callbacks?.adFinished?.();
+      return;
+    }
+
+    this.onAdStarted();
+    callbacks?.adStarted?.();
+
+    try {
+      window.CrazyGames!.SDK.ad.requestAd('midgame', {
+        adStarted: () => {
+          this.onAdStarted();
+          callbacks?.adStarted?.();
+        },
+        adFinished: () => {
+          this.onAdFinished();
+          callbacks?.adFinished?.();
+        },
+        adError: (error) => {
+          this.onAdFinished();
+          callbacks?.adError?.(error);
+        },
+      });
+    } catch (e) {
+      console.warn('[PlatformSDK] requestMidgameAd error:', e);
+      this.onAdFinished();
+      callbacks?.adFinished?.();
+    }
+  }
+
+  /**
+   * Request a rewarded ad (e.g. Extra Ball / Second Chance, double coins).
+   * Calls onReward when ad is watched completely.
+   */
+  public requestRewardedAd(callbacks: RewardedCallbacks): void {
+    const triggerReward = () => {
+      callbacks.onReward?.();
+      callbacks.rewardGranted?.();
+    };
+    const triggerStarted = () => {
+      callbacks.onStarted?.();
+      callbacks.adStarted?.();
+    };
+    const triggerFinished = () => {
+      callbacks.onFinished?.();
+      callbacks.adFinished?.();
+    };
+    const triggerError = (error: unknown) => {
+      callbacks.onError?.(error);
+      callbacks.adError?.(error);
+    };
+
+    if (!this.isAvailable()) {
+      // In local dev/fallback, award immediately so testing works seamlessly
+      console.log('[PlatformSDK] Mock Rewarded Ad completed in dev mode.');
+      triggerStarted();
+      triggerReward();
+      triggerFinished();
+      return;
+    }
+
+    this.onAdStarted();
+    triggerStarted();
+
+    let rewardGiven = false;
+
+    try {
+      window.CrazyGames!.SDK.ad.requestAd('rewarded', {
+        adStarted: () => {
+          this.onAdStarted();
+          triggerStarted();
+        },
+        adFinished: () => {
+          rewardGiven = true;
+          this.onAdFinished();
+          triggerReward();
+          triggerFinished();
+        },
+        adError: (error) => {
+          this.onAdFinished();
+          if (!rewardGiven) {
+            triggerError(error);
+          }
+        },
+      });
+    } catch (e) {
+      console.warn('[PlatformSDK] requestRewardedAd error:', e);
+      this.onAdFinished();
+      triggerError(e);
+    }
+  }
+
+  /**
+   * Subscribe to system pause requirements (ad started, tab hidden, or window blurred)
+   */
+  public onPauseRequired(listener: PauseListener): () => void {
+    this.pauseListeners.add(listener);
+    return () => {
+      this.pauseListeners.delete(listener);
+    };
+  }
+
+  /**
+   * Subscribe to system resume allowance (ad ended, tab focused)
+   */
+  public onResumeAllowed(listener: ResumeListener): () => void {
+    this.resumeListeners.add(listener);
+    return () => {
+      this.resumeListeners.delete(listener);
+    };
+  }
+
+  private onAdStarted(): void {
+    this.isAdPlaying = true;
+    soundEffects.setSystemMuted(true);
+    this.notifyPauseListeners('ad');
+  }
+
+  private onAdFinished(): void {
+    this.isAdPlaying = false;
+    if (this.isDocumentVisible && this.isWindowFocused) {
+      soundEffects.setSystemMuted(false);
+      this.notifyResumeListeners('ad');
+    }
+  }
+
+  private setupVisibilityListeners(): void {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return;
+
+    // 1. Tab visibility change (browser tab switched or minimized)
+    document.addEventListener('visibilitychange', () => {
+      const isVisible = !document.hidden;
+      this.isDocumentVisible = isVisible;
+
+      if (!isVisible) {
+        soundEffects.setSystemMuted(true);
+        this.notifyPauseListeners('blur');
+      } else if (!this.isAdPlaying && this.isWindowFocused) {
+        soundEffects.setSystemMuted(false);
+        this.notifyResumeListeners('focus');
+      }
+    });
+
+    // 2. Window blur & focus
+    window.addEventListener('blur', () => {
+      this.isWindowFocused = false;
+      soundEffects.setSystemMuted(true);
+      this.notifyPauseListeners('blur');
+    });
+
+    window.addEventListener('focus', () => {
+      this.isWindowFocused = true;
+      if (!this.isAdPlaying && this.isDocumentVisible) {
+        soundEffects.setSystemMuted(false);
+        this.notifyResumeListeners('focus');
+      }
+    });
+  }
+
+  private notifyPauseListeners(reason: 'ad' | 'blur'): void {
+    for (const listener of this.pauseListeners) {
+      try {
+        listener(reason);
+      } catch (err) {
+        console.error('[PlatformSDK] Error in pause listener:', err);
+      }
+    }
+  }
+
+  private notifyResumeListeners(reason: 'ad' | 'focus'): void {
+    for (const listener of this.resumeListeners) {
+      try {
+        listener(reason);
+      } catch (err) {
+        console.error('[PlatformSDK] Error in resume listener:', err);
+      }
+    }
+  }
+}
+
+export const platformSDK = new PlatformSDKService();
