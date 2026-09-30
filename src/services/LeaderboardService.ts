@@ -29,6 +29,7 @@ const STORAGE_KEYS = {
   DAILY_HIGH_SCORE: 'soccer_pinball_daily_high_score',
   DAILY_DATE: 'soccer_pinball_daily_date',
   TROPHIES_WON: 'soccer_pinball_trophies_won',
+  COINS: 'soccer_pinball_coins',
 };
 
 class LeaderboardService {
@@ -36,6 +37,7 @@ class LeaderboardService {
   private currentStreak = 0;
   private bestStreak = 0;
   private trophiesWon = 0;
+  private coins = 120;
   private dailyGoals = 0;
   private dailyHighScore = 0;
   private playerName = 'Player1';
@@ -65,6 +67,7 @@ class LeaderboardService {
       this.currentStreak = parseInt(localStorage.getItem(STORAGE_KEYS.CURRENT_STREAK) || '0', 10);
       this.bestStreak = parseInt(localStorage.getItem(STORAGE_KEYS.BEST_STREAK) || '0', 10);
       this.trophiesWon = parseInt(localStorage.getItem(STORAGE_KEYS.TROPHIES_WON) || '0', 10);
+      this.coins = parseInt(localStorage.getItem(STORAGE_KEYS.COINS) || '120', 10);
 
       const savedName = localStorage.getItem(STORAGE_KEYS.PLAYER_NAME);
       if (savedName && savedName.trim().length > 0) {
@@ -99,6 +102,32 @@ class LeaderboardService {
     };
   }
 
+  public getCoins(): number {
+    return this.coins;
+  }
+
+  public addCoins(amount: number) {
+    if (amount <= 0) return;
+    this.coins += amount;
+    this.saveCoins();
+    this.notify();
+  }
+
+  public spendCoins(amount: number): boolean {
+    if (amount <= 0) return true;
+    if (this.coins < amount) return false;
+    this.coins -= amount;
+    this.saveCoins();
+    this.notify();
+    return true;
+  }
+
+  private saveCoins() {
+    try {
+      localStorage.setItem(STORAGE_KEYS.COINS, String(this.coins));
+    } catch {}
+  }
+
   /**
    * Daily Streak boosts score: +10% boost per consecutive win/streak day (max +100% / 2x multiplier).
    */
@@ -115,6 +144,7 @@ class LeaderboardService {
       currentStreak: this.currentStreak,
       bestStreak: this.bestStreak,
       trophiesWon: this.trophiesWon,
+      coins: this.coins,
       dailyGoals: this.dailyGoals,
       dailyHighScore: this.dailyHighScore,
       playerName: this.playerName,
@@ -128,8 +158,11 @@ class LeaderboardService {
 
   public recordWorldCupVictory() {
     this.trophiesWon += 1;
+    const earnedCoins = Math.round(100 * this.getStreakScoreMultiplier());
+    this.coins += earnedCoins;
     try {
       localStorage.setItem(STORAGE_KEYS.TROPHIES_WON, String(this.trophiesWon));
+      localStorage.setItem(STORAGE_KEYS.COINS, String(this.coins));
     } catch {}
     this.notify();
   }
@@ -140,6 +173,8 @@ class LeaderboardService {
 
   public recordGoalScored(count = 1) {
     this.addDailyGoals(count);
+    const earnedCoins = Math.round(5 * count * this.getStreakScoreMultiplier());
+    this.addCoins(earnedCoins);
   }
 
   public setPlayerName(name: string) {
@@ -183,12 +218,14 @@ class LeaderboardService {
   }
 
   public recordMatchResult(won: boolean, matchScore: number, matchGoals: number) {
-    // 1. Streak handling
+    // 1. Streak & coins handling
     if (won) {
       this.currentStreak += 1;
       if (this.currentStreak > this.bestStreak) {
         this.bestStreak = this.currentStreak;
       }
+      const earnedCoins = Math.round(25 * this.getStreakScoreMultiplier());
+      this.coins += earnedCoins;
     } else {
       this.currentStreak = 0;
     }
@@ -204,9 +241,17 @@ class LeaderboardService {
       localStorage.setItem(STORAGE_KEYS.BEST_STREAK, String(this.bestStreak));
       localStorage.setItem(STORAGE_KEYS.DAILY_GOALS, String(this.dailyGoals));
       localStorage.setItem(STORAGE_KEYS.DAILY_HIGH_SCORE, String(this.dailyHighScore));
+      localStorage.setItem(STORAGE_KEYS.COINS, String(this.coins));
     } catch {}
 
     this.notify();
+  }
+
+  public subscribe(listener: () => void): () => void {
+    this.listeners.push(listener);
+    return () => {
+      this.listeners = this.listeners.filter((l) => l !== listener);
+    };
   }
 
   public addDailyGoals(goals = 1) {

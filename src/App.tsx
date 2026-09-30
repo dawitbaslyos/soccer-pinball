@@ -270,6 +270,7 @@ export default function App() {
     platformSDK.gameplayStart();
     setShowSecondChance(false);
     setMatchType('quick');
+    engineRef.current?.syncRosterSquad();
     engineRef.current?.setAiDifficulty('medium');
     engineRef.current?.setMaxGoals(5);
     engineRef.current?.setScoreMultiplier(leaderboardService.getStreakScoreMultiplier());
@@ -326,6 +327,7 @@ export default function App() {
     setMatchType('tournament');
     setGameMode('two_player');
     setActiveScreen('gameplay');
+    engineRef.current?.syncRosterSquad();
     setPendingPlacementRole(null);
     setSelectedPlayer(null);
     setPenaltyState(null);
@@ -369,6 +371,7 @@ export default function App() {
     platformSDK.gameplayStart();
     setShowSecondChance(false);
     setActiveTournamentMatch(null);
+    engineRef.current?.syncRosterSquad();
     engineRef.current?.setMaxGoals(twoPlayerSettings.targetGoals);
     engineRef.current?.setP2Cpu(false);
     engineRef.current?.setScoreMultiplier(leaderboardService.getStreakScoreMultiplier());
@@ -885,6 +888,7 @@ export default function App() {
     }));
     if (engineRef.current) {
       engineRef.current.resetGameOver();
+      engineRef.current.syncRosterSquad();
       engineRef.current.setGameMode('home');
     }
   };
@@ -1039,7 +1043,10 @@ export default function App() {
       {/* Screen 4: Dedicated Full-Screen World Cup Ball Shop & Armory */}
       {activeScreen === 'shop' && (
         <ShopScreen
-          onBackToHome={handleGoHome}
+          onBackToHome={() => {
+            engineRef.current?.syncRosterSquad();
+            handleGoHome();
+          }}
           onSelectSkin={(skinId) => engineRef.current?.setBallSkin(skinId)}
         />
       )}

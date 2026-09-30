@@ -4,6 +4,7 @@ import confetti from 'canvas-confetti';
 import { GameMode, MatchType, TournamentRound, TOURNAMENT_ROUNDS } from '../types';
 import { CountryFlag } from './CountryFlag';
 import { soundEffects } from '../audio/SoundEffects';
+import { leaderboardService } from '../services/LeaderboardService';
 
 interface GameOverViewProps {
   score: number;
@@ -64,6 +65,13 @@ export const GameOverView: React.FC<GameOverViewProps> = ({
 
   const canAdvanceTournament =
     isTournament && isUserWinner && (tournamentRound?.roundNumber ?? 1) < 3;
+
+  const streakMult = leaderboardService.getStreakScoreMultiplier();
+  const earnedGoalsCoins = Math.round(goals * 5 * streakMult);
+  const earnedWinCoins = isUserWinner ? Math.round(25 * streakMult) : Math.round(10 * streakMult);
+  const earnedCupCoins = isTournamentChampion ? Math.round(100 * streakMult) : 0;
+  const totalEarnedCoins = earnedGoalsCoins + earnedWinCoins + earnedCupCoins;
+  const currentCoins = leaderboardService.getCoins();
 
   let outcomeTitle = 'FULL TIME DRAW!';
   if (isTwoPlayer) {
@@ -224,10 +232,21 @@ export const GameOverView: React.FC<GameOverViewProps> = ({
           </div>
         </div>
 
-        {/* Score Pill */}
-        <div className="inline-flex items-center space-x-1.5 px-3 py-1 bg-amber-100 border border-black/30 rounded-full text-xs font-black text-neutral-800">
-          <span>MATCH PTS:</span>
-          <span className="text-amber-700">{score.toLocaleString()}</span>
+        {/* Score & Coins Summary Pills */}
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          <div className="inline-flex items-center space-x-1.5 px-3 py-1 bg-amber-100 border border-black/30 rounded-full text-xs font-black text-neutral-800">
+            <span>MATCH PTS:</span>
+            <span className="text-amber-700 font-mono">{score.toLocaleString()}</span>
+          </div>
+
+          <div
+            id="game-over-coins-pill"
+            className="inline-flex items-center space-x-1 px-3 py-1 bg-amber-400 border-2 border-black rounded-full text-xs font-black text-black shadow-[0_2px_0_#000] animate-pulse"
+          >
+            <span>+{totalEarnedCoins}</span>
+            <span className="text-xs">🪙</span>
+            <span className="text-[10px] text-black/70 font-bold">({currentCoins} TOTAL)</span>
+          </div>
         </div>
 
         {/* Action Buttons */}

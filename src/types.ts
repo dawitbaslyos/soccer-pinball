@@ -326,7 +326,11 @@ export interface PlayerProfile {
   iq: number; // 0 - 100: Intelligence & vision for bank shots and passes
   shotAccuracy: number; // 0 - 100: Precision aiming on goal corners
   passSpeed: number; // Impulse weight
-  specialTrait?: 'bank_master' | 'tiki_taka' | 'sniper' | 'wall_rebound';
+  power?: number;
+  speed?: number;
+  hitbox?: number;
+  perkTitle?: string;
+  specialTrait?: 'bank_master' | 'tiki_taka' | 'sniper' | 'wall_rebound' | string;
 }
 
 export interface FieldPlayerConfig {

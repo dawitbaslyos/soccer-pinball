@@ -13,6 +13,7 @@ import {
 } from '../types';
 import { soundEffects } from '../audio/SoundEffects';
 import { PRESET_FORMATIONS } from './formations';
+import { rosterManager, RosterPlayer } from '../services/RosterManager';
 
 export interface EngineCallbacks {
   onScoreUpdate: (stats: GameStats) => void;
@@ -241,6 +242,54 @@ export class SoccerPinballEngine {
   // Field Players & Tactician Placement
   public static readonly MIN_PLAYER_SPACING = 2.0;
   private fieldPlayers: PlayerCharacter[] = [];
+  private customSquadPlayers: RosterPlayer[] = rosterManager.getActiveSquad();
+  private unsubscribeRoster?: () => void;
+
+  public syncRosterSquad(squad?: [RosterPlayer, RosterPlayer, RosterPlayer]) {
+    this.customSquadPlayers = squad || rosterManager.getActiveSquad();
+    this.applySquadProfilesToFieldPlayers();
+  }
+
+  public applySquadProfilesToFieldPlayers() {
+    if (!this.fieldPlayers || this.fieldPlayers.length === 0) return;
+    this.fieldPlayers.forEach((player) => {
+      if (player.team === 'p2') return;
+
+      const squadIdx = player.role === 'striker' ? 0 : (player.role === 'midfielder' || player.role === 'cannon') ? 1 : 2;
+      const squadMember = this.customSquadPlayers[squadIdx];
+      if (!squadMember) return;
+
+      player.name = squadMember.name;
+      player.profile = {
+        id: squadMember.id,
+        name: squadMember.name,
+        rarity: squadMember.rarity,
+        iq: squadMember.stats.iq,
+        shotAccuracy: squadMember.stats.iq,
+        passSpeed: squadMember.stats.power,
+        power: squadMember.stats.power,
+        speed: squadMember.stats.speed,
+        hitbox: squadMember.stats.hitbox,
+        perkTitle: squadMember.perkTitle,
+        specialTrait: squadMember.stats.iq >= 90 ? 'bank_master' : undefined,
+      };
+
+      // Dynamically re-tint jersey and shorts meshes if present
+      player.group.traverse((child) => {
+        if (child instanceof THREE.Mesh && child.material instanceof THREE.MeshStandardMaterial) {
+          // Torso mesh (positioned around y = 1.35)
+          if (Math.abs(child.position.y - 1.35) < 0.12) {
+            child.material.color.setHex(squadMember.colors.jersey);
+          } else if (Math.abs(child.position.y - 0.92) < 0.12) {
+            // Shorts mesh (positioned around y = 0.92)
+            child.material.color.setHex(squadMember.colors.shorts);
+          }
+        }
+      });
+    });
+    this.callbacks.onPlayersChanged?.(this.getFieldPlayerConfigs());
+  }
+
   private draggedPlayer: PlayerCharacter | null = null;
   private isDraggingPlayer = false;
   private selectedPlayerId: string | null = null;
@@ -344,6 +393,11 @@ export class SoccerPinballEngine {
 
     // Render one initial static frame for the stadium backdrop
     this.renderViewports();
+
+    // Auto-sync roster squad when changed in shop/transfers
+    this.unsubscribeRoster = rosterManager.subscribe(() => {
+      this.syncRosterSquad();
+    });
   }
 
   // Calibrate camera perspective according to viewport aspect ratio and chosen game mode:
@@ -1951,6 +2005,9 @@ export class SoccerPinballEngine {
     let ringColor = 0xff4757;
     let roleLabel = 'STRIKER';
 
+    const squadIdx = role === 'striker' ? 0 : (role === 'midfielder' || role === 'cannon') ? 1 : 2;
+    const squadMember = this.customSquadPlayers[squadIdx];
+
     if (team === 'p2') {
       if (this.isP2Cpu && this.p2CountryName) {
         jerseyColor = this.p2JerseyColor;
@@ -1963,6 +2020,11 @@ export class SoccerPinballEngine {
         ringColor = 0xff4757;
         roleLabel = `P2 ${role.toUpperCase()}`;
       }
+    } else if (squadMember) {
+      jerseyColor = squadMember.colors.jersey;
+      shortsColor = squadMember.colors.shorts;
+      ringColor = 0x00d2ff;
+      roleLabel = squadMember.name.toUpperCase();
     } else if (team === 'p1') {
       jerseyColor = role === 'striker' ? 0x0984e3 : role === 'midfielder' ? 0x00cec9 : role === 'defender' ? 0x2980b9 : 0xf39c12;
       shortsColor = 0xf1f2f6;
@@ -2181,12 +2243,27 @@ export class SoccerPinballEngine {
       hasYellowCard: false,
       isEjected: false,
       team,
-      profile: {
+      profile: squadMember && team !== 'p2' ? {
+        id: squadMember.id,
+        name: squadMember.name,
+        rarity: squadMember.rarity,
+        iq: squadMember.stats.iq,
+        shotAccuracy: squadMember.stats.iq,
+        passSpeed: squadMember.stats.power,
+        power: squadMember.stats.power,
+        speed: squadMember.stats.speed,
+        hitbox: squadMember.stats.hitbox,
+        perkTitle: squadMember.perkTitle,
+        specialTrait: squadMember.stats.iq >= 90 ? 'bank_master' : 'sniper',
+      } : {
         id: `profile_${id}`,
         name: roleLabel,
         iq: role === 'midfielder' ? 94 : role === 'striker' ? 90 : role === 'cannon' ? 92 : 86,
         shotAccuracy: role === 'cannon' ? 96 : role === 'striker' ? 92 : 84,
         passSpeed: role === 'cannon' ? 28 : role === 'striker' ? 25 : 21,
+        power: role === 'cannon' ? 95 : role === 'striker' ? 90 : 82,
+        speed: 85,
+        hitbox: role === 'defender' ? 95 : 82,
         specialTrait: role === 'midfielder' ? 'tiki_taka' : role === 'defender' ? 'bank_master' : 'sniper',
       },
     };
@@ -4527,13 +4604,14 @@ export class SoccerPinballEngine {
       }
 
       const playerIq = kicker.profile?.iq ?? (kicker.role === 'midfielder' ? 94 : kicker.role === 'striker' ? 90 : 85);
-      const isBankMaster = kicker.profile?.specialTrait === 'bank_master';
+      const playerPower = kicker.profile?.power ?? (kicker.role === 'cannon' ? 95 : kicker.role === 'striker' ? 90 : 82);
+      const isBankMaster = kicker.profile?.specialTrait === 'bank_master' || playerIq >= 94;
 
       if (hasClearDirectShot && bestDirectTarget && !isBankMaster) {
         // Direct shot is open! Drill it into the corner!
         chosenTarget.set(bestDirectTarget.x, 0, bestDirectTarget.z);
-        chosenSpeed = (kicker.role === 'cannon' ? 28.5 : 23.5 + Math.random() * 3.5) * extraPowerMultiplier;
-        soundEffects.playKick(kicker.role === 'cannon' ? 1.9 : 1.5);
+        chosenSpeed = (20.0 + (playerPower / 100) * 11.5 + Math.random() * 2.0) * extraPowerMultiplier;
+        soundEffects.playKick(playerPower > 92 ? 1.9 : 1.5);
       } else {
         // Direct shot is blocked or kicker is Bank Master: CALCULATE INTENTIONAL WALL BANK SHOT!
         const bankShot = this.evaluateWallBankShot(origin, targetNetZ, isP1, evalRayClearance);
@@ -4541,9 +4619,9 @@ export class SoccerPinballEngine {
         if (bankShot.viable && bankShot.bouncePoint && (playerIq >= 70 || isBankMaster)) {
           // Intentional wall bank shot off cushion!
           chosenTarget.copy(bankShot.bouncePoint);
-          chosenSpeed = 23.0 * extraPowerMultiplier;
+          chosenSpeed = (20.5 + (playerPower / 100) * 8.5) * extraPowerMultiplier;
           this.wasLastShotBank = true;
-          soundEffects.playKick(1.6);
+          soundEffects.playKick(1.65);
           this.callbacks.onPlacementFeedback?.({
             message: `📐 ${kicker.name} calculated Wall Bank Shot!`,
             type: 'success',
@@ -4628,7 +4706,8 @@ export class SoccerPinballEngine {
 
   private executePlayerKick(player: PlayerCharacter, extraPowerMultiplier: number = 1.0) {
     player.isKicking = true;
-    player.kickTimer = 0.42;
+    const speedStat = player.profile?.speed ?? 80;
+    player.kickTimer = Math.max(0.12, 0.42 - (speedStat / 100) * 0.22);
 
     // Dramatic kick leg windup & body lean so the kick is unmistakably visible
     player.legRight.rotation.x = -1.4; // Windup backswing
@@ -5152,6 +5231,10 @@ export class SoccerPinballEngine {
   };
 
   public destroy() {
+    if (this.unsubscribeRoster) {
+      this.unsubscribeRoster();
+      this.unsubscribeRoster = undefined;
+    }
     this.cancelGhostPlacement();
     if (this.kickResetTimeout) {
       clearTimeout(this.kickResetTimeout);
