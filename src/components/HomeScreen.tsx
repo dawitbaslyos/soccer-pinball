@@ -10,6 +10,7 @@ interface HomeScreenProps {
   onOpenTournament: () => void;
   onOpenTwoPlayer: () => void;
   onOpenShop: () => void;
+  onOpenOnline?: () => void;
   currentStreak?: number;
   playerName?: string;
   playerCountry?: string;
@@ -22,6 +23,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   onOpenTournament,
   onOpenTwoPlayer,
   onOpenShop,
+  onOpenOnline,
   currentStreak = 0,
   playerName = 'Player1',
   playerCountry = 'Brazil',
@@ -273,6 +275,36 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
                 ➔
               </span>
             </button>
+
+            {/* Option 4: Online Multiplayer via Playroom Kit */}
+            {onOpenOnline && (
+              <button
+                id="btn-main-online"
+                type="button"
+                onClick={onOpenOnline}
+                className="w-full group py-2.5 px-3.5 bg-emerald-500 hover:bg-emerald-400 active:translate-y-0.5 active:shadow-[0_1px_0_#000] border-2 border-black rounded-xl flex items-center justify-between shadow-[0_3.5px_0_#000] transition-all cursor-pointer select-none text-black touch-manipulation"
+              >
+                <div className="flex items-center space-x-3">
+                  <div className="w-8 h-8 rounded-lg bg-white border-2 border-black flex items-center justify-center shadow-[0_1.5px_0_#000] group-hover:scale-105 transition-transform">
+                    <span className="text-lg leading-none">🌐</span>
+                  </div>
+                  <div className="flex flex-col items-start leading-none">
+                    <span className="text-xs sm:text-sm font-black tracking-wide uppercase flex items-center gap-1.5">
+                      ONLINE
+                      <span className="px-1.5 py-0.2 bg-black text-emerald-300 text-[8px] font-black rounded">
+                        NEW
+                      </span>
+                    </span>
+                    <span className="text-[9px] font-extrabold text-black/60 mt-1 uppercase">
+                      Global Matchmaking • 1v1
+                    </span>
+                  </div>
+                </div>
+                <span className="text-xs font-black text-black/60 group-hover:translate-x-0.5 transition-transform">
+                  ➔
+                </span>
+              </button>
+            )}
           </div>
         </div>
       </div>

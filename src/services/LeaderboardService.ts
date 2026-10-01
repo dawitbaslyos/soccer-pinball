@@ -30,6 +30,8 @@ const STORAGE_KEYS = {
   DAILY_DATE: 'soccer_pinball_daily_date',
   TROPHIES_WON: 'soccer_pinball_trophies_won',
   COINS: 'soccer_pinball_coins',
+  /** Cloud save blob key */
+  CLOUD_BLOB: 'sp_save_v1',
 };
 
 class LeaderboardService {
@@ -45,31 +47,33 @@ class LeaderboardService {
 
   constructor() {
     this.loadFromStorage();
+    // Kick off cloud sync asynchronously after local load
+    this.syncFromCloud().catch(() => {});
   }
 
   private loadFromStorage() {
     try {
       const today = new Date().toISOString().split('T')[0];
-      const savedDate = localStorage.getItem(STORAGE_KEYS.DAILY_DATE);
+      const savedDate = platformSDK.cloudLoad(STORAGE_KEYS.DAILY_DATE);
 
       // Check daily reset
       if (savedDate !== today) {
         this.dailyGoals = 0;
         this.dailyHighScore = 0;
-        localStorage.setItem(STORAGE_KEYS.DAILY_DATE, today);
-        localStorage.setItem(STORAGE_KEYS.DAILY_GOALS, '0');
-        localStorage.setItem(STORAGE_KEYS.DAILY_HIGH_SCORE, '0');
+        platformSDK.cloudSave(STORAGE_KEYS.DAILY_DATE, today);
+        platformSDK.cloudSave(STORAGE_KEYS.DAILY_GOALS, '0');
+        platformSDK.cloudSave(STORAGE_KEYS.DAILY_HIGH_SCORE, '0');
       } else {
-        this.dailyGoals = parseInt(localStorage.getItem(STORAGE_KEYS.DAILY_GOALS) || '0', 10);
-        this.dailyHighScore = parseInt(localStorage.getItem(STORAGE_KEYS.DAILY_HIGH_SCORE) || '0', 10);
+        this.dailyGoals = parseInt(platformSDK.cloudLoad(STORAGE_KEYS.DAILY_GOALS) || '0', 10);
+        this.dailyHighScore = parseInt(platformSDK.cloudLoad(STORAGE_KEYS.DAILY_HIGH_SCORE) || '0', 10);
       }
 
-      this.currentStreak = parseInt(localStorage.getItem(STORAGE_KEYS.CURRENT_STREAK) || '0', 10);
-      this.bestStreak = parseInt(localStorage.getItem(STORAGE_KEYS.BEST_STREAK) || '0', 10);
-      this.trophiesWon = parseInt(localStorage.getItem(STORAGE_KEYS.TROPHIES_WON) || '0', 10);
-      this.coins = parseInt(localStorage.getItem(STORAGE_KEYS.COINS) || '120', 10);
+      this.currentStreak = parseInt(platformSDK.cloudLoad(STORAGE_KEYS.CURRENT_STREAK) || '0', 10);
+      this.bestStreak = parseInt(platformSDK.cloudLoad(STORAGE_KEYS.BEST_STREAK) || '0', 10);
+      this.trophiesWon = parseInt(platformSDK.cloudLoad(STORAGE_KEYS.TROPHIES_WON) || '0', 10);
+      this.coins = parseInt(platformSDK.cloudLoad(STORAGE_KEYS.COINS) || '120', 10);
 
-      const savedName = localStorage.getItem(STORAGE_KEYS.PLAYER_NAME);
+      const savedName = platformSDK.cloudLoad(STORAGE_KEYS.PLAYER_NAME);
       if (savedName && savedName.trim().length > 0) {
         const clean = savedName.trim().slice(0, 14);
         if (clean.toLowerCase() === 'striker' || clean.toLowerCase() === 'striker#1') {
@@ -79,7 +83,7 @@ class LeaderboardService {
         }
       }
 
-      const savedCountryCode = localStorage.getItem(STORAGE_KEYS.PLAYER_COUNTRY);
+      const savedCountryCode = platformSDK.cloudLoad(STORAGE_KEYS.PLAYER_COUNTRY);
       if (savedCountryCode) {
         const found = ALL_COUNTRIES.find(
           (c) =>
@@ -91,6 +95,95 @@ class LeaderboardService {
     } catch {
       // Storage unavailable / private mode
     }
+  }
+
+  /**
+   * Async cloud sync: fetches the CG user (for auto-name) and merges cloud blob stats.
+   */
+  private async syncFromCloud(): Promise<void> {
+    try {
+      // 1. Auto-set player name from CG user if still default
+      const cgUser = await platformSDK.getUser();
+      if (cgUser && cgUser.username) {
+        if (this.playerName === 'Player1') {
+          this.playerName = cgUser.username.slice(0, 14);
+          platformSDK.cloudSave(STORAGE_KEYS.PLAYER_NAME, this.playerName);
+        }
+      }
+
+      // 2. Load cloud blob and merge higher values
+      const blobRaw = platformSDK.cloudLoad(STORAGE_KEYS.CLOUD_BLOB);
+      if (blobRaw) {
+        const blob = JSON.parse(blobRaw) as {
+          coins?: number;
+          bestStreak?: number;
+          trophiesWon?: number;
+          dailyHighScore?: number;
+          playerName?: string;
+          playerCountryCode?: string;
+        };
+
+        if (typeof blob.bestStreak === 'number' && blob.bestStreak > this.bestStreak) {
+          this.bestStreak = blob.bestStreak;
+        }
+        if (typeof blob.trophiesWon === 'number' && blob.trophiesWon > this.trophiesWon) {
+          this.trophiesWon = blob.trophiesWon;
+        }
+        if (typeof blob.coins === 'number' && blob.coins > this.coins) {
+          this.coins = blob.coins;
+        }
+        if (typeof blob.dailyHighScore === 'number' && blob.dailyHighScore > this.dailyHighScore) {
+          this.dailyHighScore = blob.dailyHighScore;
+        }
+        // Accept cloud player name only if local is still default
+        if (blob.playerName && this.playerName === 'Player1') {
+          this.playerName = blob.playerName.slice(0, 14);
+        }
+        if (blob.playerCountryCode) {
+          const found = ALL_COUNTRIES.find(
+            (c) => c.code.toLowerCase() === blob.playerCountryCode!.toLowerCase()
+          );
+          if (found) this.playerCountry = found;
+        }
+      }
+    } catch {
+      // Network / parse errors are non-fatal
+    }
+
+    this.notify();
+  }
+
+  /**
+   * Save a cloud blob snapshot of the key progression stats.
+   */
+  private saveToCloud(): void {
+    try {
+      const blob = JSON.stringify({
+        coins: this.coins,
+        bestStreak: this.bestStreak,
+        trophiesWon: this.trophiesWon,
+        dailyHighScore: this.dailyHighScore,
+        playerName: this.playerName,
+        playerCountryCode: this.playerCountry.code,
+      });
+      platformSDK.cloudSave(STORAGE_KEYS.CLOUD_BLOB, blob);
+    } catch {
+      // Non-fatal
+    }
+  }
+
+  /**
+   * Subscribe to CrazyGames auth changes.
+   * On login, re-runs syncFromCloud so the new user's cloud data is merged.
+   * Returns an unsubscribe function.
+   */
+  public subscribeToAuth(): () => void {
+    return platformSDK.addAuthListener((user) => {
+      if (user) {
+        // User just logged in — refresh cloud state
+        this.syncFromCloud().catch(() => {});
+      }
+    });
   }
 
   public getIdentity(): PlayerIdentity {
@@ -110,6 +203,7 @@ class LeaderboardService {
     if (amount <= 0) return;
     this.coins += amount;
     this.saveCoins();
+    this.saveToCloud();
     this.notify();
   }
 
@@ -118,13 +212,14 @@ class LeaderboardService {
     if (this.coins < amount) return false;
     this.coins -= amount;
     this.saveCoins();
+    this.saveToCloud();
     this.notify();
     return true;
   }
 
   private saveCoins() {
     try {
-      localStorage.setItem(STORAGE_KEYS.COINS, String(this.coins));
+      platformSDK.cloudSave(STORAGE_KEYS.COINS, String(this.coins));
     } catch {}
   }
 
@@ -161,9 +256,12 @@ class LeaderboardService {
     const earnedCoins = Math.round(100 * this.getStreakScoreMultiplier());
     this.coins += earnedCoins;
     try {
-      localStorage.setItem(STORAGE_KEYS.TROPHIES_WON, String(this.trophiesWon));
-      localStorage.setItem(STORAGE_KEYS.COINS, String(this.coins));
+      platformSDK.cloudSave(STORAGE_KEYS.TROPHIES_WON, String(this.trophiesWon));
+      platformSDK.cloudSave(STORAGE_KEYS.COINS, String(this.coins));
     } catch {}
+    this.saveToCloud();
+    // Submit daily high score to leaderboard (fire-and-forget)
+    platformSDK.submitLeaderboardScore('high_score', this.dailyHighScore);
     this.notify();
   }
 
@@ -182,8 +280,9 @@ class LeaderboardService {
     const clean = trimmed.length > 0 ? trimmed : 'Player1';
     this.playerName = clean;
     try {
-      localStorage.setItem(STORAGE_KEYS.PLAYER_NAME, clean);
+      platformSDK.cloudSave(STORAGE_KEYS.PLAYER_NAME, clean);
     } catch {}
+    this.saveToCloud();
     this.notify();
   }
 
@@ -195,8 +294,9 @@ class LeaderboardService {
     if (found) {
       this.playerCountry = found;
       try {
-        localStorage.setItem(STORAGE_KEYS.PLAYER_COUNTRY, found.code);
+        platformSDK.cloudSave(STORAGE_KEYS.PLAYER_COUNTRY, found.code);
       } catch {}
+      this.saveToCloud();
       this.notify();
     }
   }
@@ -237,12 +337,19 @@ class LeaderboardService {
     }
 
     try {
-      localStorage.setItem(STORAGE_KEYS.CURRENT_STREAK, String(this.currentStreak));
-      localStorage.setItem(STORAGE_KEYS.BEST_STREAK, String(this.bestStreak));
-      localStorage.setItem(STORAGE_KEYS.DAILY_GOALS, String(this.dailyGoals));
-      localStorage.setItem(STORAGE_KEYS.DAILY_HIGH_SCORE, String(this.dailyHighScore));
-      localStorage.setItem(STORAGE_KEYS.COINS, String(this.coins));
+      platformSDK.cloudSave(STORAGE_KEYS.CURRENT_STREAK, String(this.currentStreak));
+      platformSDK.cloudSave(STORAGE_KEYS.BEST_STREAK, String(this.bestStreak));
+      platformSDK.cloudSave(STORAGE_KEYS.DAILY_GOALS, String(this.dailyGoals));
+      platformSDK.cloudSave(STORAGE_KEYS.DAILY_HIGH_SCORE, String(this.dailyHighScore));
+      platformSDK.cloudSave(STORAGE_KEYS.COINS, String(this.coins));
     } catch {}
+
+    this.saveToCloud();
+
+    // Submit to leaderboard on wins (fire-and-forget)
+    if (won) {
+      platformSDK.submitLeaderboardScore('high_score', this.dailyHighScore);
+    }
 
     this.notify();
   }
@@ -257,7 +364,7 @@ class LeaderboardService {
   public addDailyGoals(goals = 1) {
     this.dailyGoals += goals;
     try {
-      localStorage.setItem(STORAGE_KEYS.DAILY_GOALS, String(this.dailyGoals));
+      platformSDK.cloudSave(STORAGE_KEYS.DAILY_GOALS, String(this.dailyGoals));
     } catch {}
     this.notify();
   }
@@ -335,13 +442,6 @@ class LeaderboardService {
       ...item,
       rank: idx + 1,
     }));
-  }
-
-  public subscribe(listener: () => void): () => void {
-    this.listeners.push(listener);
-    return () => {
-      this.listeners = this.listeners.filter((l) => l !== listener);
-    };
   }
 
   private notify() {

@@ -1,4 +1,4 @@
-export type ActiveScreen = 'home' | 'tournament_hub' | 'two_player_hub' | 'shop' | 'gameplay';
+export type ActiveScreen = 'home' | 'tournament_hub' | 'two_player_hub' | 'online_hub' | 'shop' | 'gameplay';
 
 export interface TwoPlayerSettings {
   targetGoals: number;
@@ -151,7 +151,7 @@ export type CameraViewMode = 'gameplay';
 
 export type GameMode = 'home' | 'pinball' | 'team' | 'two_player';
 
-export type MatchType = 'quick' | 'tournament' | 'two_player';
+export type MatchType = 'quick' | 'tournament' | 'two_player' | 'online';
 
 export type TournamentDifficulty = 'standard' | 'pro' | 'legend';
 

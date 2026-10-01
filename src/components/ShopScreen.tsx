@@ -418,7 +418,7 @@ export const ShopScreen: React.FC<ShopScreenProps> = ({
                         </span>
                         {/* Corner Country Flag */}
                         <div className="absolute top-1 left-1">
-                          <CountryFlag country={player.country} size="xs" rounded="xs" shadow={false} />
+                          <CountryFlag country={player.country} size="xs" rounded="sm" shadow={false} />
                         </div>
                       </motion.div>
 
@@ -503,7 +503,7 @@ export const ShopScreen: React.FC<ShopScreenProps> = ({
                     {/* Top Row: Country Flag + Rarity */}
                     <div className="flex items-center justify-between mb-1">
                       <div className="flex items-center gap-1">
-                        <CountryFlag country={player.country} size="xs" rounded="xs" shadow={false} />
+                        <CountryFlag country={player.country} size="xs" rounded="sm" shadow={false} />
                         <span className="text-[9px] font-bold text-neutral-400 uppercase truncate max-w-[60px]">
                           {player.country}
                         </span>

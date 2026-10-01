@@ -48,8 +48,23 @@ interface CrazyGamesSDKInstance {
     ) => void;
     hasAdblock?: () => Promise<boolean>;
   };
+  /** CrazyGames SDK v3 Data API — mirrors localStorage */
+  data?: {
+    setItem: (key: string, value: string) => void;
+    getItem: (key: string) => string | null;
+    removeItem: (key: string) => void;
+    clear: () => void;
+  };
+  /** CrazyGames SDK v3 User API */
   user?: {
-    getUser?: () => Promise<unknown>;
+    getUser?: () => Promise<{ username: string; profilePictureUrl: string } | null>;
+    addAuthListener?: (callback: (user: { username: string } | null) => void) => void;
+    removeAuthListener?: (callback: (user: { username: string } | null) => void) => void;
+  };
+  /** CrazyGames SDK v3 Leaderboard API */
+  leaderboard?: {
+    submit: (params: { name: string; score: number }) => Promise<void>;
+    getScores: (params: { name: string; top: number }) => Promise<{ playerName: string; score: number }[]>;
   };
 }
 
@@ -258,6 +273,126 @@ class PlatformSDKService {
       this.resumeListeners.delete(listener);
     };
   }
+
+  // ─── Cloud Save / Data API ──────────────────────────────────────────────────
+
+  /**
+   * Save a key/value string to CrazyGames cloud data.
+   * Falls back to localStorage when SDK is not available.
+   */
+  public cloudSave(key: string, value: string): void {
+    try {
+      if (window.CrazyGames?.SDK?.data) {
+        window.CrazyGames.SDK.data.setItem(key, value);
+      } else {
+        localStorage.setItem(key, value);
+      }
+    } catch (e) {
+      console.warn('[PlatformSDK] cloudSave error:', e);
+      try { localStorage.setItem(key, value); } catch {}
+    }
+  }
+
+  /**
+   * Load a value by key from CrazyGames cloud data.
+   * Falls back to localStorage when SDK is not available.
+   */
+  public cloudLoad(key: string): string | null {
+    try {
+      if (window.CrazyGames?.SDK?.data) {
+        return window.CrazyGames.SDK.data.getItem(key);
+      }
+      return localStorage.getItem(key);
+    } catch (e) {
+      console.warn('[PlatformSDK] cloudLoad error:', e);
+      try { return localStorage.getItem(key); } catch { return null; }
+    }
+  }
+
+  /**
+   * Remove a key from CrazyGames cloud data (and localStorage fallback).
+   */
+  public cloudRemove(key: string): void {
+    try {
+      if (window.CrazyGames?.SDK?.data) {
+        window.CrazyGames.SDK.data.removeItem(key);
+      } else {
+        localStorage.removeItem(key);
+      }
+    } catch (e) {
+      console.warn('[PlatformSDK] cloudRemove error:', e);
+    }
+  }
+
+  // ─── User Auth API ───────────────────────────────────────────────────────────
+
+  /**
+   * Returns the currently logged-in CrazyGames user, or null if not logged in / SDK unavailable.
+   */
+  public async getUser(): Promise<{ username: string; profilePictureUrl?: string } | null> {
+    try {
+      if (window.CrazyGames?.SDK?.user?.getUser) {
+        const user = await window.CrazyGames.SDK.user.getUser();
+        return user ?? null;
+      }
+    } catch (e) {
+      console.warn('[PlatformSDK] getUser error:', e);
+    }
+    return null;
+  }
+
+  /**
+   * Subscribe to CrazyGames auth changes (login / logout).
+   * Returns an unsubscribe function. Safe no-op when SDK is unavailable.
+   */
+  public addAuthListener(cb: (user: { username: string } | null) => void): () => void {
+    try {
+      if (window.CrazyGames?.SDK?.user?.addAuthListener) {
+        window.CrazyGames.SDK.user.addAuthListener(cb);
+        return () => {
+          try {
+            window.CrazyGames?.SDK?.user?.removeAuthListener?.(cb);
+          } catch {}
+        };
+      }
+    } catch (e) {
+      console.warn('[PlatformSDK] addAuthListener error:', e);
+    }
+    // No-op unsubscribe when SDK is unavailable
+    return () => {};
+  }
+
+  // ─── Leaderboard API ────────────────────────────────────────────────────────
+
+  /**
+   * Submit a score to a CrazyGames leaderboard. Fire-and-forget; logs on error.
+   */
+  public submitLeaderboardScore(boardName: string, score: number): void {
+    if (!window.CrazyGames?.SDK?.leaderboard) return;
+    window.CrazyGames.SDK.leaderboard
+      .submit({ name: boardName, score })
+      .catch((e: unknown) => console.warn('[PlatformSDK] submitLeaderboardScore error:', e));
+  }
+
+  /**
+   * Fetch top scores from a CrazyGames leaderboard.
+   * Returns an empty array if SDK is unavailable or the call fails.
+   */
+  public async getLeaderboardScores(
+    boardName: string,
+    top: number
+  ): Promise<Array<{ playerName: string; score: number }>> {
+    try {
+      if (window.CrazyGames?.SDK?.leaderboard) {
+        return await window.CrazyGames.SDK.leaderboard.getScores({ name: boardName, top });
+      }
+    } catch (e) {
+      console.warn('[PlatformSDK] getLeaderboardScores error:', e);
+    }
+    return [];
+  }
+
+  // ────────────────────────────────────────────────────────────────────────────
 
   private onAdStarted(): void {
     this.isAdPlaying = true;

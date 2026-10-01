@@ -35,9 +35,11 @@ import { TwoPlayerTacticsOverlay } from './components/TwoPlayerTacticsOverlay';
 import { TwoPlayerFlipperControls } from './components/TwoPlayerFlipperControls';
 import { SecondChanceModal } from './components/SecondChanceModal';
 import { ShopScreen } from './components/ShopScreen';
+import { OnlineHubScreen } from './components/OnlineHubScreen';
 import { ballSkinManager } from './services/BallSkinManager';
 import { platformSDK } from './services/PlatformSDK';
 import { leaderboardService } from './services/LeaderboardService';
+import { multiplayerService } from './services/MultiplayerService';
 
 export default function App() {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -58,6 +60,14 @@ export default function App() {
     targetGoals: 5,
     matchDurationSeconds: 120,
   });
+
+  // Online multiplayer (Playroom Kit) state
+  const [isOnlineSearching, setIsOnlineSearching] = useState<boolean>(false);
+  const [onlineOpponent, setOnlineOpponent] = useState<{
+    name: string;
+    country: string;
+    flag: string;
+  } | null>(null);
 
   const [showGoalFlash, setShowGoalFlash] = useState<boolean>(false);
   const [goalScorer, setGoalScorer] = useState<'pinball' | 'players'>('pinball');
@@ -177,8 +187,14 @@ export default function App() {
 
   // Initialize 3D Engine & Platform SDK
   useEffect(() => {
-    // Initialize CrazyGames SDK v3 (with dev fallback)
-    platformSDK.init().catch(console.error);
+    // Initialize CrazyGames SDK v3 (with dev fallback), then subscribe to auth changes
+    let unsubAuth: (() => void) | undefined;
+    platformSDK.init().then(() => {
+      // After SDK is ready, subscribe to auth so cloud sync fires on CG login
+      unsubAuth = leaderboardService.subscribeToAuth();
+      // Refresh leaderboard stats in case syncFromCloud already resolved
+      setLeaderboardStats(leaderboardService.getStats());
+    }).catch(console.error);
 
     // Auto-pause game on tab blur or ad display (CrazyGames requirement)
     const unsubPause = platformSDK.onPauseRequired(() => {
@@ -192,6 +208,7 @@ export default function App() {
     if (!containerRef.current) {
       return () => {
         unsubPause();
+        unsubAuth?.();
       };
     }
 
@@ -260,6 +277,7 @@ export default function App() {
 
     return () => {
       unsubPause();
+      unsubAuth?.();
       engine.destroy();
       engineRef.current = null;
     };
@@ -869,6 +887,74 @@ export default function App() {
     }
   };
 
+  // Open Online Hub screen
+  const handleOpenOnlineHub = () => {
+    setActiveScreen('online_hub');
+  };
+
+  // Start an online match via Playroom Kit
+  const handleStartOnlineMatch = async () => {
+    setIsOnlineSearching(true);
+    try {
+      await multiplayerService.startOnlineMatch({
+        playerName: leaderboardStats.playerName,
+        playerCountry: leaderboardStats.playerCountry,
+        playerFlag: leaderboardStats.playerCountry, // country used as flag identifier
+        onPlayerJoined: (player) => {
+          // Store opponent profile (ignore local player join)
+          const myId = player.isHost
+            ? undefined
+            : player.id;
+          if (myId) {
+            setOnlineOpponent({
+              name: player.name,
+              country: player.country,
+              flag: player.flag,
+            });
+          }
+        },
+        onPlayerLeft: (_playerId) => {
+          // Opponent disconnected — return to home
+          setOnlineOpponent(null);
+          handleGoHome();
+        },
+        onGameStart: (_amHost) => {
+          setIsOnlineSearching(false);
+          setMatchType('online');
+          setGameMode('two_player');
+          setActiveScreen('gameplay');
+          setPendingPlacementRole(null);
+          setSelectedPlayer(null);
+          setPenaltyState(null);
+          setIsPowerKickReady(false);
+          setStats((prev) => ({
+            ...prev,
+            score: 0,
+            goals: 0,
+            playerGoals: 0,
+            isGameOver: false,
+            isPaused: false,
+            winner: null,
+          }));
+          if (engineRef.current) {
+            engineRef.current.setGameMode('two_player');
+            engineRef.current.setP2Cpu(false);
+            engineRef.current.setPaused(false);
+            engineRef.current.restartGame();
+          }
+          platformSDK.gameplayStart();
+
+          // TODO (full game loop sync): integrate multiplayerService.syncBall() /
+          // multiplayerService.readBallState() into SoccerPinballEngine's animation loop.
+          // For now, physics continue to run locally — scaffolding only.
+        },
+      });
+    } catch (err) {
+      console.error('[MultiplayerService] Failed to start online match:', err);
+      setIsOnlineSearching(false);
+    }
+  };
+
   // Return to home screen
   const handleGoHome = () => {
     platformSDK.gameplayStop();
@@ -1004,6 +1090,7 @@ export default function App() {
           onOpenTournament={() => setActiveScreen('tournament_hub')}
           onOpenTwoPlayer={handleStartTwoPlayerMatch}
           onOpenShop={() => setActiveScreen('shop')}
+          onOpenOnline={handleOpenOnlineHub}
           currentStreak={leaderboardStats.currentStreak}
           playerName={leaderboardStats.playerName}
           playerCountry={leaderboardStats.playerCountry}
@@ -1051,7 +1138,23 @@ export default function App() {
         />
       )}
 
-      {/* Screen 4: Gameplay Overlays & In-Match Controls */}
+      {/* Screen 5: Online Multiplayer Hub (Playroom Kit matchmaking lobby) */}
+      {activeScreen === 'online_hub' && (
+        <OnlineHubScreen
+          playerName={leaderboardStats.playerName}
+          playerCountry={leaderboardStats.playerCountry}
+          playerFlag={leaderboardStats.playerCountry}
+          isSearching={isOnlineSearching}
+          onFindMatch={handleStartOnlineMatch}
+          onBack={() => {
+            setIsOnlineSearching(false);
+            multiplayerService.disconnect();
+            setActiveScreen('home');
+          }}
+        />
+      )}
+
+      {/* Screen 6: Gameplay Overlays & In-Match Controls */}
       {activeScreen === 'gameplay' && (
         <>
           {/* Mode: Team Placement Toolbar (Visible ONLY in 'team' mode) */}

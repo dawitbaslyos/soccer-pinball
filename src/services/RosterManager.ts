@@ -1,4 +1,5 @@
 import { leaderboardService } from './LeaderboardService';
+import { platformSDK } from './PlatformSDK';
 
 export type PlayerArchetype = 'striker' | 'playmaker' | 'defender' | 'winger';
 export type PlayerRarity = 'common' | 'rare' | 'legendary';
@@ -141,11 +142,13 @@ class RosterManager {
 
   constructor() {
     this.loadFromStorage();
+    // Kick off cloud sync asynchronously after local load
+    this.syncFromCloud().catch(() => {});
   }
 
   private loadFromStorage() {
     try {
-      const savedUnlocked = localStorage.getItem(ROSTER_STORAGE_KEYS.UNLOCKED);
+      const savedUnlocked = platformSDK.cloudLoad(ROSTER_STORAGE_KEYS.UNLOCKED);
       if (savedUnlocked) {
         const parsed = JSON.parse(savedUnlocked);
         if (Array.isArray(parsed)) {
@@ -153,7 +156,7 @@ class RosterManager {
         }
       }
 
-      const savedSquad = localStorage.getItem(ROSTER_STORAGE_KEYS.ACTIVE_SQUAD);
+      const savedSquad = platformSDK.cloudLoad(ROSTER_STORAGE_KEYS.ACTIVE_SQUAD);
       if (savedSquad) {
         const parsed = JSON.parse(savedSquad);
         if (Array.isArray(parsed) && parsed.length === 3) {
@@ -170,15 +173,72 @@ class RosterManager {
 
   private saveToStorage() {
     try {
-      localStorage.setItem(
+      platformSDK.cloudSave(
         ROSTER_STORAGE_KEYS.UNLOCKED,
         JSON.stringify(Array.from(this.unlockedIds))
       );
-      localStorage.setItem(
+      platformSDK.cloudSave(
         ROSTER_STORAGE_KEYS.ACTIVE_SQUAD,
         JSON.stringify(this.activeSquadIds)
       );
     } catch {}
+  }
+
+  /**
+   * Async cloud sync: loads the 'sp_roster_v1' blob and merges unlocked IDs (union),
+   * uses cloud activeSquad if all 3 IDs refer to valid players.
+   */
+  private async syncFromCloud(): Promise<void> {
+    try {
+      const blobRaw = platformSDK.cloudLoad('sp_roster_v1');
+      if (blobRaw) {
+        const blob = JSON.parse(blobRaw) as {
+          unlockedIds?: string[];
+          activeSquadIds?: [string, string, string];
+        };
+
+        // Union of unlocked IDs
+        if (Array.isArray(blob.unlockedIds)) {
+          blob.unlockedIds.forEach((id) => {
+            if (this.players.some((p) => p.id === id)) {
+              this.unlockedIds.add(id);
+            }
+          });
+        }
+
+        // Accept cloud squad only if all 3 IDs are valid players
+        if (
+          Array.isArray(blob.activeSquadIds) &&
+          blob.activeSquadIds.length === 3 &&
+          blob.activeSquadIds.every((id) => this.players.some((p) => p.id === id))
+        ) {
+          this.activeSquadIds = [
+            blob.activeSquadIds[0],
+            blob.activeSquadIds[1],
+            blob.activeSquadIds[2],
+          ];
+        }
+
+        this.notify();
+      }
+    } catch {
+      // Non-fatal
+    }
+  }
+
+  /**
+   * Save roster state to cloud as a JSON blob ('sp_roster_v1').
+   */
+  private saveToCloud(): void {
+    try {
+      const blob = JSON.stringify({
+        unlockedIds: Array.from(this.unlockedIds),
+        activeSquadIds: this.activeSquadIds,
+      });
+      platformSDK.cloudSave('sp_roster_v1', blob);
+    } catch {
+      // Non-fatal
+    }
   }
 
   private notify() {
@@ -227,6 +287,7 @@ class RosterManager {
 
     this.unlockedIds.add(playerId);
     this.saveToStorage();
+    this.saveToCloud();
     this.notify();
     return true;
   }
@@ -244,6 +305,7 @@ class RosterManager {
 
     this.activeSquadIds[slotIndex] = playerId;
     this.saveToStorage();
+    this.saveToCloud();
     this.notify();
     return true;
   }
