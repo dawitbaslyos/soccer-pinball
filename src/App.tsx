@@ -777,7 +777,15 @@ export default function App() {
   const handleLeftFlipperUp = () => engineRef.current?.setLeftFlipper(false);
   const handleRightFlipperDown = () => engineRef.current?.setRightFlipper(true);
   const handleRightFlipperUp = () => engineRef.current?.setRightFlipper(false);
-  const handleActionKick = () => engineRef.current?.triggerActionKick();
+  const handleActionKick = () => {
+    if (multiplayerService.isOnline && !multiplayerService.iAmHost) {
+      // Client: send kick event to host via RPC instead of running locally
+      multiplayerService.sendActionKick();
+    } else {
+      engineRef.current?.triggerActionKick();
+    }
+  };
+
 
   // Restart match
   const handleRestart = () => {
@@ -918,7 +926,7 @@ export default function App() {
           setOnlineOpponent(null);
           handleGoHome();
         },
-        onGameStart: (_amHost) => {
+        onGameStart: (amHost) => {
           setIsOnlineSearching(false);
           setMatchType('online');
           setGameMode('two_player');
@@ -944,9 +952,42 @@ export default function App() {
           }
           platformSDK.gameplayStart();
 
-          // TODO (full game loop sync): integrate multiplayerService.syncBall() /
-          // multiplayerService.readBallState() into SoccerPinballEngine's animation loop.
-          // For now, physics continue to run locally — scaffolding only.
+          // ── ONLINE SYNC: subscribe to events from multiplayerService ─────
+          // CLIENT: receives goal RPC from host → update local score display
+          const unsubGoal = multiplayerService.on('goal', (data) => {
+            const d = data as { scorer: 'pinball' | 'players'; scoreHost: number; scoreGuest: number };
+            setStats((prev) => ({
+              ...prev,
+              goals: d.scoreHost,
+              playerGoals: d.scoreGuest,
+            }));
+          });
+
+          // CLIENT: receives gameOver RPC from host → trigger game-over UI
+          const unsubGameOver = multiplayerService.on('gameOver', (data) => {
+            const d = data as { winner: string };
+            setStats((prev) => ({
+              ...prev,
+              isGameOver: true,
+              winner: d.winner as 'pinball' | 'players' | null,
+            }));
+          });
+
+          // HOST: receives actionKick RPC from client → trigger kick in engine
+          const unsubKick = amHost
+            ? multiplayerService.on('actionKick', () => {
+                engineRef.current?.triggerActionKick(false, 'flipper');
+              })
+            : () => {};
+
+          // Cleanup all subscriptions when user leaves online match
+          const origGoHome = () => {
+            unsubGoal();
+            unsubGameOver();
+            unsubKick();
+          };
+          // Store cleanup on window for handleGoHome to call
+          (window as Window & { _onlineCleanup?: () => void })._onlineCleanup = origGoHome;
         },
       });
     } catch (err) {
@@ -955,8 +996,19 @@ export default function App() {
     }
   };
 
+
   // Return to home screen
   const handleGoHome = () => {
+    // Cleanup any active online match subscriptions
+    const cleanup = (window as Window & { _onlineCleanup?: () => void })._onlineCleanup;
+    if (cleanup) {
+      cleanup();
+      (window as Window & { _onlineCleanup?: () => void })._onlineCleanup = undefined;
+    }
+    if (multiplayerService.isOnline) {
+      multiplayerService.disconnect();
+    }
+
     platformSDK.gameplayStop();
     setShowSecondChance(false);
     setActiveScreen('home');
@@ -978,6 +1030,8 @@ export default function App() {
       engineRef.current.setGameMode('home');
     }
   };
+
+
 
   // Team Placement Handlers (for 'team' mode)
   const handleSelectPendingRole = (role: PlayerRole | null) => {

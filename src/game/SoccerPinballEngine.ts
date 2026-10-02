@@ -14,6 +14,8 @@ import {
 import { soundEffects } from '../audio/SoundEffects';
 import { PRESET_FORMATIONS } from './formations';
 import { rosterManager, RosterPlayer } from '../services/RosterManager';
+import { multiplayerService } from '../services/MultiplayerService';
+
 
 export interface EngineCallbacks {
   onScoreUpdate: (stats: GameStats) => void;
@@ -337,6 +339,21 @@ export class SoccerPinballEngine {
   private animationFrameId: number | null = null;
   private lastTime = 0;
   private aimTarget = new THREE.Vector3(0, 0, -10.2); // Default aimed towards goal center
+
+  // Online multiplayer sync (Playroom Kit)
+  private ballSyncTick = 0;        // Monotonically increasing tick sent with each broadcast
+  private ballSyncThrottle = 0;    // Timer: host broadcasts at ~30Hz to avoid overloading Playroom
+  // Client-side lerp targets (received from host, smoothly interpolated each frame)
+  private remoteBallPosTarget = new THREE.Vector3();
+  private remoteBallVelTarget = new THREE.Vector3();
+  private hasRemoteTarget = false;
+  // Opponent input throttle (client sends inputs at ~30Hz)
+  private inputSyncThrottle = 0;
+  // Last applied opponent inputs (host side)
+  private lastOpponentLeftFlipper = false;
+  private lastOpponentRightFlipper = false;
+  private lastOpponentActionKick = false;
+
 
   constructor(container: HTMLElement, callbacks: EngineCallbacks) {
     this.container = container;
@@ -1745,6 +1762,16 @@ export class SoccerPinballEngine {
 
     this.callbacks.onScoreUpdate(this.stats);
     this.callbacks.onGoal(scorer === 'p1' ? 'pinball' : 'players', this.stats);
+
+    // Announce goal to all online clients so they see score update too
+    if (multiplayerService.isOnline && multiplayerService.iAmHost) {
+      multiplayerService.announceGoal(
+        scorer === 'p1' ? 'pinball' : 'players',
+        this.stats.goals,
+        this.stats.playerGoals
+      );
+    }
+
 
     if (this.stats.goals >= this.stats.maxGoals || this.stats.playerGoals >= this.stats.maxGoals) {
       this.stats.isGameOver = true;
@@ -3693,16 +3720,100 @@ export class SoccerPinballEngine {
     const delta = rawDelta * this.timeScale;
 
     if (!this.stats.isPaused && !this.stats.isGameOver) {
+      // ─── ONLINE MULTIPLAYER: Client reads host ball state & lerps ──────────
+      if (multiplayerService.isOnline && !multiplayerService.iAmHost) {
+        this.applyRemoteBallState(delta);
+      }
+
       this.updatePhysics(delta);
       this.updateFieldPlayers(delta);
       this.updateGoalkeeper(delta);
       this.updateDustPuffs(delta);
       this.updateBallTrail(delta);
+
+      // ─── ONLINE MULTIPLAYER: Host broadcasts ball state at ~30Hz ──────────
+      if (multiplayerService.isOnline && multiplayerService.iAmHost) {
+        this.ballSyncThrottle -= delta;
+        if (this.ballSyncThrottle <= 0) {
+          this.ballSyncThrottle = 1 / 30; // 30Hz broadcast rate
+          multiplayerService.syncBall({
+            x: this.ballPos.x,
+            z: this.ballPos.z,
+            vx: this.ballVel.x,
+            vz: this.ballVel.z,
+            tick: ++this.ballSyncTick,
+          });
+        }
+      }
+
+      // ─── ONLINE MULTIPLAYER: Client broadcasts its inputs at ~30Hz ─────────
+      if (multiplayerService.isOnline && !multiplayerService.iAmHost) {
+        this.inputSyncThrottle -= delta;
+        if (this.inputSyncThrottle <= 0) {
+          this.inputSyncThrottle = 1 / 30;
+          multiplayerService.sendInput({
+            leftFlipper: this.isLeftFlipperDown,
+            rightFlipper: this.isRightFlipperDown,
+            actionKick: false, // sent via RPC separately
+          });
+        }
+      }
+
+      // ─── ONLINE MULTIPLAYER: Host reads client inputs and applies to P2 ────
+      if (multiplayerService.isOnline && multiplayerService.iAmHost) {
+        const opponentInput = multiplayerService.readOpponentInput();
+        if (opponentInput !== null) {
+          if (opponentInput.leftFlipper !== this.lastOpponentLeftFlipper) {
+            this.lastOpponentLeftFlipper = opponentInput.leftFlipper;
+            this.setP2LeftFlipper(opponentInput.leftFlipper);
+          }
+          if (opponentInput.rightFlipper !== this.lastOpponentRightFlipper) {
+            this.lastOpponentRightFlipper = opponentInput.rightFlipper;
+            this.setP2RightFlipper(opponentInput.rightFlipper);
+          }
+          if (opponentInput.actionKick && !this.lastOpponentActionKick) {
+            this.triggerActionKick(false, 'flipper');
+          }
+          this.lastOpponentActionKick = opponentInput.actionKick;
+        }
+      }
     }
 
     this.updateCameraShake(rawDelta);
     this.renderViewports();
   };
+
+  /**
+   * Client-side: reads the latest ball state broadcast from the host and
+   * smoothly lerps (interpolates) the local ball position + velocity toward it.
+   * Discards stale packets (ticks already consumed).
+   */
+  private applyRemoteBallState(delta: number) {
+    const remote = multiplayerService.readBallState();
+    if (remote) {
+      this.remoteBallPosTarget.set(remote.x, this.ballRadius, remote.z);
+      this.remoteBallVelTarget.set(remote.vx, 0, remote.vz);
+      this.hasRemoteTarget = true;
+    }
+
+    if (this.hasRemoteTarget) {
+      // Lerp position: fast catch-up (α = 18 per second) so client tracks
+      // host within 1-2 frames of lag even at 60fps with 60ms ping
+      const α = Math.min(1.0, 18.0 * delta);
+      this.ballPos.lerp(this.remoteBallPosTarget, α);
+      this.ballVel.lerp(this.remoteBallVelTarget, α);
+
+      // Keep ball on the table plane
+      this.ballPos.y = this.ballRadius;
+
+      // Apply to mesh immediately so the visual stays synced
+      if (this.ballMesh) {
+        this.ballMesh.position.copy(this.ballPos);
+      }
+    }
+  }
+
+
 
   private updatePhysics(dt: number) {
     if (this.gameMode === 'two_player' && this.isTwoPlayerSetupPhase) {

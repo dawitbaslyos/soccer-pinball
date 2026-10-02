@@ -106,6 +106,11 @@ class MultiplayerService {
       this.emit('gameOver', data);
     });
 
+    // Client sends action kick to host via RPC
+    pk.RPC.register('actionKick', async (_data: unknown, _sender) => {
+      this.emit('actionKick', {});
+    });
+
     options.onGameStart(this._isHost);
   }
 
@@ -143,16 +148,30 @@ class MultiplayerService {
     me.setState('input', input);
   }
 
+  /** Client sends an action kick event to the host via RPC */
+  public sendActionKick(): void {
+    if (!this._isOnline || this._isHost || !this.playroomKit) return;
+    this.playroomKit.RPC.call('actionKick', {}, this.playroomKit.RPC.Mode.HOST);
+  }
+
   /**
    * Host reads opponent (client) inputs.
-   * Note: full opponent input reads require iterating Playroom player list.
-   * This is a placeholder — actual wiring depends on game loop integration.
+   * Iterates all Playroom participants, finds the non-local player, and reads their 'input' state.
    */
   public readOpponentInput(): InputState | null {
     if (!this._isOnline || !this._isHost || !this.playroomKit) return null;
-    // TODO: iterate playroomKit player list, find non-local player, read 'input' state
+    const myId = this.playroomKit.myPlayer()?.id;
+    if (!myId) return null;
+    const participants = this.playroomKit.getParticipants();
+    for (const [id, player] of Object.entries(participants)) {
+      if (id !== myId) {
+        const raw = player.getState('input') as InputState | null | undefined;
+        if (raw) return raw;
+      }
+    }
     return null;
   }
+
 
   // ---------------------------------------------------------------------------
   // Goal / game-over RPCs (host only)
